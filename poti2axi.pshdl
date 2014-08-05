@@ -1,0 +1,123 @@
+interface VHDL.work.i2c_master_byte_ctrl{
+	in bit clk;
+	in bit rst;
+	in bit nReset;
+	in bit ena;
+	in uint<16> clk_cnt;
+	in bit start;
+	in bit stop;
+	in bit read;
+	in bit write;
+	in bit ack_in;
+	in bit<8> din;
+	out bit cmd_ack;
+	out bit ack_out;
+	out bit i2c_busy;
+	out bit i2c_al;
+	out bit<8> dout;
+	in bit scl_i;
+	out bit scl_o;
+	out bit scl_oen;
+	in bit sda_i;
+	out bit sda_o;
+	out bit sda_oen;
+}
+
+
+//the iteration over the ports is strange 0>2>4>6>1>3>5>7
+//find a better way to iterate, maybe hardcode to double sample rate
+module de.tuhh.ict.poti2axi {
+    include AXIBus axiBus=generate axi()<[
+    row potis {
+        rw register uint<8> poti1;
+        rw register uint<8> poti2;
+        rw register uint<8> poti3;
+        rw register uint<8> poti4;
+    }
+    row ctl {
+    	rw register bit enable;
+    	fill;
+    }
+    memory {
+        potis;
+        ctl;
+    }
+    ]>;
+
+	VHDL.work.i2c_master_byte_ctrl i2c;
+	//PreScale to 100KHz
+	i2c.clk=$clk;
+	i2c.rst=$rst;
+	i2c.nReset=1;
+	i2c.clk_cnt=6600;
+
+	i2c.ack_in=1;
+
+	//SCL & SDA Connections
+
+	// construct inout port for axi/xsp compliance
+	in bit scl_i;
+	i2c.scl_i = scl_i;
+	out bit scl_o = i2c.scl_o;
+	out bit scl_t = i2c.scl_oen;
+
+	in bit sda_i;
+	i2c.sda_i = sda_i;
+	out bit sda_o = i2c.sda_o;
+	out bit sda_t = i2c.sda_oen;
+
+	enum States={init_addr, init_cmd, read_addr, read_read}
+	register enum States state;
+	switch (state) {
+		case init_addr:
+			i2c.start=1;
+			i2c.write=1;
+			i2c.din=0b10010000;
+			if (i2c.cmd_ack)
+				state=init_cmd;
+		case init_cmd:
+			i2c.write=1;
+			i2c.din=(bit)0b1#(bit<3>)portCounter#(bit<4>)0b11_00;
+			if (i2c.cmd_ack)
+				state=read_addr;
+		case read_addr:
+			i2c.start=1;
+			i2c.write=1;
+			i2c.din=0b10010001;
+			if (i2c.cmd_ack) {
+				state=read_read;
+			}
+		case read_read:
+			i2c.read=1;
+			i2c.stop=1;
+			if (i2c.cmd_ack){
+				compValue[portCounter]=(uint)i2c.dout;
+				state=init_addr;
+				portCounter += 1;
+			}
+		default:
+	}
+
+	register uint<3> portCounter;
+	register uint<8> compValue[8];
+
+	// write values to axi
+    axiBus.poti1=compValue[0];
+    axiBus.poti2=compValue[4];
+    axiBus.poti3=compValue[1];
+    axiBus.poti4=compValue[5];
+
+    out bit<4> LED;
+    register uint<8> counter = counter+1;
+    LED{0} = counter < axiBus.poti1;
+    LED{1} = counter < axiBus.poti2;
+    LED{2} = counter < axiBus.poti3;
+    LED{3} = counter < axiBus.poti4;
+
+    if (axiBus.enable) {
+		i2c.ena=1;
+    } else {
+    	i2c.ena=0;
+    }
+
+}
